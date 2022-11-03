@@ -1,10 +1,6 @@
 import io
-from math import log
-import shutil
-from typing import List, Tuple
+from typing import List
 import pandas as pd
-import numpy as np
-from bs4 import BeautifulSoup
 import os
 import re
 from PIL import Image
@@ -19,7 +15,7 @@ from selenium.webdriver.support.color import Color
 
 
 class Parser:
-    def __init__(self, screenshot_path, firefox_path: str = r'C:\Program Files\Mozilla Firefox\firefox.exe', debug=True):
+    def __init__(self, screenshot_path = "", firefox_path: str = r'C:\Program Files\Mozilla Firefox\firefox.exe', debug=False):
         self.driver = webdriver.Firefox(
             options=self.get_options(firefox_path=firefox_path), service=self.get_service())
         self.screenshot_path = screenshot_path
@@ -452,14 +448,3 @@ class Parser:
                                                "div[class*='{}']".format(img_class))
         imgs = [elem for elem in imgs if elem.is_displayed()]
         return imgs
-
-
-if __name__ == "__main__":
-    output_dir = os.path.dirname(os.path.realpath(__file__))
-    screenshot_dir = os.path.join(output_dir, "screenshots")
-    if os.path.exists(screenshot_dir):
-        shutil.rmtree(screenshot_dir)
-    os.makedirs(screenshot_dir)
-    parser = Parser(screenshot_dir)
-    df = parser.parse("http://www.laardo.ru")
-    df.to_excel(output_dir + "/analysis.xlsx")
