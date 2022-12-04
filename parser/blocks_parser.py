@@ -4,7 +4,7 @@ import pandas as pd
 import os
 import re
 from PIL import Image
-
+import uuid
 
 from selenium import webdriver
 from selenium.webdriver.remote.webelement import WebElement
@@ -29,9 +29,9 @@ class Parser:
 
     def parse(self, url: str) -> pd.DataFrame:
         self.driver.get(url)
-        self.driver.maximize_window()
-        self.driver.execute_script("window.scrollBy(0, document.body.scrollHeight)")
-        self.driver.execute_script("window.scrollBy(0, 0)")
+        # self.driver.maximize_window()
+        # self.driver.execute_script("window.scrollBy(0, document.body.scrollHeight)")
+        # self.driver.execute_script("window.scrollBy(0, 0)")
 
         self.page_height = self.get_page_height()
         self.page_width = self.get_page_width()
@@ -70,9 +70,9 @@ class Parser:
         semantic_blocks["counter"] = 1
         semantic_blocks = semantic_blocks.groupby('y').agg({
             "type": "first",
-            "x": "min",
             "width": "max",
             "height": "max",
+            "x": "min",
             "background_color": "first",
             "counter": "count"
         })
@@ -103,19 +103,23 @@ class Parser:
             else:
                 next_block = semantic_blocks.iloc[i + 1].to_dict()
 
-            if (current_block["type"] == "colored_block" and next_block["type"] == "head_text") \
-                and current_block["height"] > self.min_block_height:
+            if not (current_block["type"] == "colored_block" and next_block["type"] == "colored_block") \
+                and current_block["x"] < next_block["x"] \
+                    and i >= 2:
+                # and current_block["height"] > self.min_block_height:
                     accum_block["y_end"] = accum_block["y"] + current_block["height"]
+                    continue
+            
             
             if next_block["y"] - accum_block["y"] < self.min_block_height:
                 continue
             
-            elems_between = elements_data[(~elements_data["type"].isin(["head_text", "colored_block"])) \
-                                                  & elements_data["y"].between(accum_block["y"], next_block["y"] - 2)]
-            if self.debug:
-                print("Elems between", elems_between.shape[0])
-            if elems_between.shape[0] < 1:
-                continue
+            # elems_between = elements_data[(~elements_data["type"].isin(["head_text", "colored_block"])) \
+            #                                       & elements_data["y"].between(accum_block["y"], next_block["y"] - 2)]
+            # if self.debug:
+            #     print("Elems between", elems_between.shape[0])
+            # if elems_between.shape[0] < 1:
+            #     continue
 
             accum_block["height"] = next_block["y"] - accum_block["y"]
 
@@ -218,6 +222,15 @@ class Parser:
             "text": [],
             "background_color": []
         }
+        
+        elements_data["type"].append("head_text")
+        elements_data["x"].append(0)
+        elements_data["y"].append(0)
+        elements_data["width"].append(self.page_width)
+        elements_data["height"].append(self.min_block_height)
+        elements_data["background_color"].append(None)
+        elements_data["text"].append(None)
+        
 
         imgs = self.get_imgs(self.driver)
         self.collect_coords_data(elements_data, imgs, "image")
@@ -266,17 +279,9 @@ class Parser:
                 data["background_color"].append(None)
 
     def get_blocks(self, block: WebElement) -> List[WebElement]:
-        headers = block.find_elements(By.CSS_SELECTOR, 'div[id*="header"]') + \
-            block.find_elements(By.CSS_SELECTOR, 'div[class*="header"') + \
-            block.find_elements(By.CSS_SELECTOR, 'header')
+        blocks = block.find_elements(By.CSS_SELECTOR, "div, section, main, header, footer, a, *::before, *::after")
 
-        elements = block.find_elements(By.TAG_NAME, "div")
-
-        footers = block.find_elements(By.CSS_SELECTOR, 'div[id*="footer"') + \
-            block.find_elements(By.CSS_SELECTOR, 'div[class*="footer"') + \
-            block.find_elements(By.CSS_SELECTOR, 'footer')
-        blocks = elements + headers + footers
-        blocks = [elem for elem in blocks if elem.is_displayed()]
+        blocks = [elem for elem in blocks if self.is_displayed(elem)]
         return blocks
 
     def take_screenshot(self, path: str, x: float, y: float, width: float, height: float) -> None:
@@ -294,12 +299,12 @@ class Parser:
         colored_blocks = []
         current_block = None
         for colored_block in all_blocks:
-            current_block = colored_block[1]
+            current_block : WebElement = colored_block[1]
             cur_color = self.get_background_color(current_block)
             if (not cur_color) \
                 or (self.get_height(current_block) < self.min_block_height) \
                     or (self.get_width(current_block) < self.min_block_width) \
-                    or not current_block.is_displayed():
+                    or not self.is_displayed(current_block):
                 continue
 
             colored_blocks.append(current_block)
@@ -314,34 +319,27 @@ class Parser:
 
     def get_heads(self, block: WebElement) -> List[WebElement]:
         tags = ['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', "h6"]
-        heads = ['h1', 'h2', 'h3', 'h4', 'h5', "h6"]
+        heads = ['h1', 'h2', 'h3']
         elements = []
         for tag in tags:
             elements += [[self.get_font_size(elem), elem] for elem in block.find_elements(By.CSS_SELECTOR, f'{tag}')
-                         if elem.is_displayed()]
+                         if self.is_displayed(elem)]
         pair = max(elements, key=lambda x: x[0])
-        min_font_size = pair[0] * 0.93
-        elements = [elem[1] for elem in elements if elem[1].tag_name in heads or (elem[0] > min_font_size \
-            or (self.title_regex.match(elem[1].get_attribute('class')) != None and self.not_input_regex.fullmatch(elem[1].get_attribute('class'))))]
+        min_font_size = pair[0] * 0.8
+        elements = [elem[1] for elem in elements if elem[1].tag_name in heads or (elem[0] > min_font_size)]
+            # (self.title_regex.match(elem[1].get_attribute('class')) != None and self.not_input_regex.fullmatch(elem[1].get_attribute('class'))))]
         return elements
 
     def get_forms(self, block: WebElement) -> List[WebElement]:
-        forms = block.find_elements(By.TAG_NAME, "form")
-        forms += block.find_elements(By.CSS_SELECTOR, 'div[class*="form"]')
-        forms += block.find_elements(By.CSS_SELECTOR, 'div[id*="form"]')
-        forms = [elem for elem in forms if elem.is_displayed()]
+        forms = block.find_elements(By.CSS_SELECTOR, 'div[class*="form"], div[id*="form"], form')
+        forms = [elem for elem in forms if self.is_displayed(elem)]
         return forms
 
     def get_sliders(self, block: WebElement) -> List[WebElement]:
         sliders = self.driver.find_elements(
             By.CSS_SELECTOR, 'div[class*="slider"]')
-        sliders = [elem for elem in sliders if elem.is_displayed()]
+        sliders = [elem for elem in sliders if self.is_displayed(elem)]
         return sliders
-
-    def get_parent(self, element: WebElement) -> WebElement:
-        parent = element.find_element(By.XPATH, "..")
-        print(parent.tag_name)
-        return parent
 
     def get_page_height(self) -> float:
         page = self.driver.find_element(By.TAG_NAME, "body")
@@ -370,63 +368,82 @@ class Parser:
         return service
 
     def get_x(self, element: WebElement) -> float:
-        x = element.rect["x"]
-        return abs(x)
+        try:
+            x = element.rect["x"]
+            return abs(x)
+        except:
+            return float('inf')
 
     def get_y(self, element: WebElement) -> float:
-        y = element.rect["y"]
-        return abs(y)
+        try:
+            y = element.rect["y"]
+            return abs(y)
+        except:
+            return float('inf')
 
     def get_width(self, element: WebElement) -> float:
-        width = element.size['width']
-        return width
+        try:
+            width = element.size['width']
+            return width
+        except:
+            return float('inf')
 
     def get_height(self, element: WebElement) -> float:
-        height = element.size['height']
-        return height
+        try:
+            height = element.size['height']
+            return height
+        except:
+            return float('inf')
 
     def get_buttons(self, block: WebElement) -> List[WebElement]:
-        buttons = block.find_elements(By.TAG_NAME, "button")
-        buttons += block.find_elements(By.CSS_SELECTOR,
-                                       'input[type*="button"]')
-        buttons = [button for button in buttons if button.is_displayed()]
+        buttons = block.find_elements(By.CSS_SELECTOR,
+                                       'input[type*="button"], button')
+        buttons += [elem for elem in block.find_elements(By.TAG_NAME, "a") if self.get_background_color(elem) is not None]
+        buttons = [button for button in buttons if self.is_displayed(button)]
         return buttons
 
     def get_links(self, block: WebElement) -> List[WebElement]:
         links = block.find_elements(By.TAG_NAME, "a")
-        links = [elem for elem in links if elem.is_displayed()]
+        links = [elem for elem in links if self.is_displayed(elem) and self.get_background_color(elem) is None]
         return links
 
     def get_map(self, block: WebElement) -> List[WebElement]:
-        maps = block.find_elements(By.CSS_SELECTOR, "ymaps")
-        maps += block.find_elements(By.ID, "map")
-        maps += block.find_elements(By.CSS_SELECTOR, 'div[class*="map"]')
+        maps = block.find_elements(By.CSS_SELECTOR, 'ymaps, *[id*="map"], div[class*="map"]')
         iframes = block.find_elements(By.TAG_NAME, "iframe")
         maps += [iframe for iframe in iframes if self.maps_regex.search(
             iframe.get_attribute("src"))]
-        maps = [elem for elem in maps if elem.is_displayed()]
+        maps = [elem for elem in maps if self.is_displayed(elem)]
         return maps
 
     def get_words_number(self, y_min: float, y_max: float, x_min: float = 0, x_max: float = float("inf")) -> int:
-        elements = [elem for elem in self.driver.find_elements(By.CSS_SELECTOR, "*")
-                    if y_min <= self.get_y(elem) <= y_max and elem.is_displayed()]
+        elements = [elem for elem in self.driver.find_elements(By.CSS_SELECTOR, "*:not(script, iframe)")
+                    if y_min <= self.get_y(elem) <= y_max and self.is_displayed(elem)]
         words_number = 0
         for element in elements:
             words_number += len(element.text.split())
         return words_number
     
+    def is_displayed(self, element: WebElement):
+        try:
+            return element.is_displayed()
+        except:
+            return False
+    
     def get_font_size(self, element: WebElement):
-        font_size = element.value_of_css_property("font-size")
-        match = self.font_regex.search(font_size)
-        font_size_value = int(match.group(1)) if match else 0
-        return font_size_value
+        try:
+            font_size = element.value_of_css_property("font-size")
+            match = self.font_regex.search(font_size)
+            font_size_value = int(match.group(1)) if match else 0
+            return font_size_value
+        except:
+            return 0
 
     def get_max_font_size(self, y_min: float, y_max: float, x_min: float = 0, x_max: float = float("inf")) -> int:
         tags = ['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'table']
         elements = []
         for tag in tags:
             elements += [elem for elem in self.driver.find_elements(By.CSS_SELECTOR, f'{tag}')
-                         if y_min <= self.get_y(elem) <= y_max and elem.is_displayed()]
+                         if y_min <= self.get_y(elem) <= y_max and self.is_displayed(elem)]
         max_font_size = 0
         for element in elements:
             font_size_value = self.get_font_size(element)
@@ -434,11 +451,15 @@ class Parser:
         return max_font_size
 
     def get_background_color(self, block: WebElement) -> str:
-        value = block.value_of_css_property("background-color")
-        color = Color.from_string(value)
-        if color.alpha == "0":
-            return None
-        return color.hex
+        try:
+            value = block.value_of_css_property("background-color")
+            color = Color.from_string(value)
+            if color.alpha == "0":
+                return None
+            return color.hex
+        except ValueError:
+            id = uuid.uuid1()
+            return Color.from_string(f"#{id[:6]}").hex
 
     def get_imgs(self, block: WebElement) -> List[WebElement]:
         imgs = block.find_elements(By.TAG_NAME, "img")
@@ -446,5 +467,5 @@ class Parser:
         for img_class in img_classes:
             imgs += block.find_elements(By.CSS_SELECTOR,
                                                "div[class*='{}']".format(img_class))
-        imgs = [elem for elem in imgs if elem.is_displayed()]
+        imgs = [elem for elem in imgs if self.is_displayed(elem)]
         return imgs
